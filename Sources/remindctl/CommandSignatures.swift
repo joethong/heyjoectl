@@ -39,6 +39,11 @@ enum CommandSignatures {
         names: [.long("no-input")],
         help: "Disable interactive prompts"
       ),
+      .make(
+        label: "noPrivate",
+        names: [.long("no-private")],
+        help: "Skip the flag and Urgent read through Apple's ReminderKit"
+      ),
     ]
   }
 

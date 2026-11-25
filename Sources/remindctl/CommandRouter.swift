@@ -3,7 +3,7 @@ import Foundation
 import RemindCore
 
 struct CommandRouter {
-  let rootName = "remindctl"
+  let rootName = "remindjoectl"
   let version: String
   let specs: [CommandSpec]
   let program: Program

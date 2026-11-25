@@ -14,13 +14,19 @@ extension RemindersStore {
     let priority: Int
     let dueDateComponents: DateComponents?
     let dueDateIsAllDay: Bool
+    let startDateComponents: DateComponents?
+    let startDateIsAllDay: Bool
+    let timeZoneID: String?
+    let externalID: String?
     let alarmDate: Date?
     let recurrenceRule: RecurrenceRule?
     let locationTrigger: LocationTrigger?
+    let alarms: [ReminderAlarm]
     let listID: String
     let listName: String
 
     func item(calendar: Calendar) -> ReminderItem {
+      let startDate = startDateComponents.flatMap { calendar.date(from: $0) }
       return ReminderItem(
         id: id,
         title: title,
@@ -33,9 +39,14 @@ extension RemindersStore {
         priority: ReminderPriority(eventKitValue: priority),
         dueDate: dueDateComponents.flatMap { calendar.date(from: $0) },
         dueDateIsAllDay: dueDateIsAllDay,
+        startDate: startDate,
+        startDateIsAllDay: startDate == nil ? nil : startDateIsAllDay,
+        timeZone: timeZoneID,
+        externalID: externalID.flatMap { $0.isEmpty ? nil : $0 },
         alarmDate: alarmDate,
         recurrenceRule: recurrenceRule,
         locationTrigger: locationTrigger,
+        alarms: alarms.isEmpty ? nil : alarms,
         listID: listID,
         listName: listName
       )
@@ -53,6 +64,7 @@ extension RemindersStore {
     // Skip orphaned reminders before dereferencing EventKit's calendar IUO.
     guard let calendar = reminder.calendar else { return nil }
     let components = reminder.dueDateComponents
+    let startComponents = reminder.startDateComponents
     return ReminderData(
       id: reminder.calendarItemIdentifier,
       title: reminder.title ?? "",
@@ -65,9 +77,14 @@ extension RemindersStore {
       priority: Int(reminder.priority),
       dueDateComponents: components,
       dueDateIsAllDay: isAllDay(components),
+      startDateComponents: startComponents,
+      startDateIsAllDay: isAllDay(startComponents),
+      timeZoneID: reminder.timeZone?.identifier,
+      externalID: reminder.calendarItemExternalIdentifier,
       alarmDate: alarmDate(from: reminder),
       recurrenceRule: recurrenceRule(from: reminder),
       locationTrigger: locationTrigger(from: reminder),
+      alarms: ReminderAlarm.list(from: reminder),
       listID: calendar.calendarIdentifier,
       listName: calendar.title
     )
@@ -81,7 +98,6 @@ extension RemindersStore {
 
   private static func recurrenceRule(from reminder: EKReminder) -> RecurrenceRule? {
     guard let rule = reminder.recurrenceRules?.first else { return nil }
-    guard let frequency = RecurrenceFrequency(eventKitFrequency: rule.frequency) else { return nil }
-    return RecurrenceRule(frequency: frequency, interval: rule.interval)
+    return RecurrenceRule(eventKitRule: rule)
   }
 }

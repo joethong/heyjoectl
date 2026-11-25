@@ -9,6 +9,7 @@ public enum RemindCoreError: LocalizedError, Sendable, Equatable {
   case ambiguousIdentifier(String, matches: [String])
   case invalidIdentifier(String)
   case invalidDate(String)
+  case invalidDateClockChange(String, day: String)
   case unsupported(String)
   case operationFailed(String)
 
@@ -40,6 +41,11 @@ public enum RemindCoreError: LocalizedError, Sendable, Equatable {
       return "Invalid identifier: \"\(input)\"."
     case .invalidDate(let input):
       return "Invalid date: \"\(input)\"."
+    case .invalidDateClockChange(let input, let day):
+      return [
+        "Invalid date: \"\(input)\"",
+        "(that time doesn't exist on \(day) because the clocks change; pick another time).",
+      ].joined(separator: " ")
     case .unsupported(let message):
       return message
     case .operationFailed(let message):

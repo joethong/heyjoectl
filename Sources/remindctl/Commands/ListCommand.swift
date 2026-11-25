@@ -67,7 +67,10 @@ enum ListCommand {
         let isMutation = action != .show
         if shouldReadMultipleLists(names: names, listID: listID, isMutation: isMutation) {
           let reminders = try await reminders(in: names, store: store)
-          OutputRenderer.printReminders(reminders, format: runtime.outputFormat)
+          OutputRenderer.printReminders(
+            PrivateFieldsSupport.attach(to: reminders, scope: .everything, runtime: runtime),
+            format: runtime.outputFormat
+          )
           return
         }
 
@@ -138,7 +141,10 @@ enum ListCommand {
           } else {
             try await reminders(in: names, store: store)
           }
-        OutputRenderer.printReminders(reminders, format: runtime.outputFormat)
+        OutputRenderer.printReminders(
+          PrivateFieldsSupport.attach(to: reminders, scope: .everything, runtime: runtime),
+          format: runtime.outputFormat
+        )
         return
       }
 

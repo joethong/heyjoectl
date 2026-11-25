@@ -24,23 +24,27 @@ enum CompleteCommand {
         "remindctl complete 4A83",
       ]
     ) { values, runtime in
-      let inputs = values.positional
-      guard !inputs.isEmpty else {
-        throw ParsedValuesError.missingArgument("ids")
-      }
-
-      let store = RemindersStore()
-      try await store.requestAccess()
-      let reminders = try await store.reminders(in: nil)
-      let resolved = try CommandHelpers.resolveShowIdentifiers(inputs, from: reminders)
-
-      if values.flag("dryRun") {
-        OutputRenderer.printReminders(resolved, format: runtime.outputFormat)
-        return
-      }
-
-      let updated = try await store.completeReminders(ids: resolved.map { $0.id })
-      OutputRenderer.printReminders(updated, format: runtime.outputFormat)
+      let shown = try await run(values, runtime: runtime)
+      OutputRenderer.printReminders(shown, format: runtime.outputFormat)
     }
+  }
+
+  static func run(
+    _ values: ParsedValues,
+    runtime: RuntimeOptions,
+    makeStore: () -> any ReminderCommandStore = { RemindersStore() },
+    reader: any PrivateFieldsReader = ReminderKitFieldsReader()
+  ) async throws -> [ReminderItem] {
+    let inputs = values.positional
+    guard !inputs.isEmpty else {
+      throw ParsedValuesError.missingArgument("ids")
+    }
+
+    let store = makeStore()
+    try await store.requestAccess()
+    let resolved = try await CommandHelpers.resolveShowIdentifiers(inputs, in: store)
+
+    let reminders = values.flag("dryRun") ? resolved : try await store.completeReminders(ids: resolved.map { $0.id })
+    return PrivateFieldsSupport.attachWritten(reminders, privateChange: nil, runtime: runtime, reader: reader)
   }
 }

@@ -52,7 +52,7 @@ enum ExportCommand {
 
       switch try outputMode(exportFormat: values.option("exportFormat"), runtimeFormat: runtime.outputFormat) {
       case .json:
-        OutputRenderer.printJSON(sorted)
+        OutputRenderer.printJSON(PrivateFieldsSupport.attach(to: sorted, scope: .everything, runtime: runtime))
       case .csv:
         printCSV(sorted)
       case .rendered(let format):

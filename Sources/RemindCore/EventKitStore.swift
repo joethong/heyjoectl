@@ -66,8 +66,17 @@ public actor RemindersStore {
     try await reminders(matching: listName.map(ReminderListTarget.name))
   }
 
-  public func reminders(matching target: ReminderListTarget?) async throws -> [ReminderItem] {
-    try await fetchReminders(in: try calendars(matching: target))
+  public func reminders(
+    matching target: ReminderListTarget?,
+    scope: ReminderFetchScope = .everything
+  ) async throws -> [ReminderItem] {
+    try await fetchReminders(in: try calendars(matching: target), scope: scope)
+  }
+
+  public func reminderItem(withID id: String) -> ReminderItem? {
+    (eventStore.calendarItem(withIdentifier: id) as? EKReminder)
+      .flatMap(Self.reminderData(from:))?
+      .item(calendar: calendar)
   }
 
   public func createList(name: String) async throws -> ReminderList {
@@ -118,13 +127,17 @@ public actor RemindersStore {
     if let dueDate = draft.dueDate {
       reminder.dueDateComponents = calendarComponents(from: dueDate)
     }
+    Self.applyStartDate(draft.startDate, to: reminder, calendar: self.calendar)
     if let alarmDate = draft.alarmDate {
       reminder.addAlarm(EKAlarm(absoluteDate: alarmDate.date))
     } else if let dueDate = draft.dueDate, !dueDate.isDateOnly {
       reminder.addAlarm(EKAlarm(absoluteDate: dueDate.date))
     }
+    if let seconds = draft.alarmBeforeDueSeconds {
+      try ReminderAlarmMutation.replaceRelativeAlarms(on: reminder, with: .set(beforeDueSeconds: seconds))
+    }
     if let recurrenceRule = draft.recurrenceRule {
-      replaceRecurrence(on: reminder, with: recurrenceRule)
+      Self.replaceRecurrence(on: reminder, with: recurrenceRule)
     }
     if let locationTrigger = draft.locationTrigger {
       reminder.addAlarm(try await locationAlarm(from: locationTrigger))
@@ -149,19 +162,12 @@ public actor RemindersStore {
       )
       (reminder.notes, reminder.url) = (merged.notes, merged.url)
     }
-    if let dueDateUpdate = update.dueDate {
-      if let dueDate = dueDateUpdate {
-        reminder.dueDateComponents = nil
-        reminder.dueDateComponents = calendarComponents(from: dueDate)
-      } else {
-        reminder.dueDateComponents = nil
-      }
-    }
-    if let alarmDateUpdate = update.alarmDate {
-      ReminderAlarmMutation.replaceDateAlarms(on: reminder, with: alarmDateUpdate?.date)
-    }
+    try Self.applyDateChanges(update, to: reminder, calendar: calendar)
     if let recurrenceUpdate = update.recurrenceRule {
-      replaceRecurrence(on: reminder, with: recurrenceUpdate)
+      Self.replaceRecurrence(on: reminder, with: recurrenceUpdate)
+    }
+    if let recurrenceEnd = update.recurrenceEnd {
+      try Self.replaceRecurrenceEnd(on: reminder, with: recurrenceEnd)
     }
     if let priority = update.priority {
       reminder.priority = priority.eventKitValue
@@ -217,13 +223,30 @@ extension RemindersStore {
     }
   }
 
-  private func fetchReminders(in calendars: [EKCalendar]) async throws -> [ReminderItem] {
+  static func predicate(
+    for scope: ReminderFetchScope,
+    in eventStore: EKEventStore,
+    calendars: [EKCalendar]
+  ) -> NSPredicate {
+    switch scope {
+    case .openOnly:
+      return eventStore.predicateForIncompleteReminders(
+        withDueDateStarting: nil,
+        ending: nil,
+        calendars: calendars
+      )
+    case .everything:
+      return eventStore.predicateForReminders(in: calendars)
+    }
+  }
+
+  private func fetchReminders(in calendars: [EKCalendar], scope: ReminderFetchScope) async throws -> [ReminderItem] {
     let context = EventKitFetchContext(eventStore: eventStore, calendars: calendars)
     let reminderData: [ReminderData] = try await AsyncTimeout.withTimeout(
       after: Self.externalOperationTimeout,
       timeoutError: .operationFailed("Timed out waiting for EventKit reminders after 30 seconds")
     ) { completion in
-      let predicate = context.eventStore.predicateForReminders(in: context.calendars)
+      let predicate = Self.predicate(for: scope, in: context.eventStore, calendars: context.calendars)
       let identifier = context.eventStore.fetchReminders(matching: predicate) { reminders in
         guard let claim = completion.claim() else { return }
         claim.resume(returning: (reminders ?? []).compactMap(Self.reminderData(from:)))
@@ -283,7 +306,90 @@ extension RemindersStore {
     }
   }
 
+  static func applyDateChanges(_ update: ReminderUpdate, to reminder: EKReminder, calendar: Calendar) throws {
+    try applyDueDate(update.dueDate, startUpdate: update.startDate, to: reminder, calendar: calendar)
+    applyStartDate(update.startDate, to: reminder, calendar: calendar)
+    if let alarmDateUpdate = update.alarmDate {
+      ReminderAlarmMutation.replaceDateAlarms(on: reminder, with: alarmDateUpdate?.date)
+    }
+    if let alarmBefore = update.alarmBefore {
+      try ReminderAlarmMutation.replaceRelativeAlarms(on: reminder, with: alarmBefore)
+    }
+  }
+
+  static func applyDueDate(
+    _ update: ParsedUserDate??,
+    startUpdate: ParsedUserDate??,
+    to reminder: EKReminder,
+    calendar: Calendar
+  ) throws {
+    guard let update else { return }
+    let oldStart = reminder.startDateComponents
+    let startIsCopy = startUpdate == nil && isCopy(oldStart, of: reminder.dueDateComponents)
+    let newDue = update.map { calendarComponents(from: $0, calendar: calendar) }
+    if startUpdate == nil, !startIsCopy, let oldStart, let newDue, isAfter(oldStart, newDue, calendar: calendar) {
+      throw RemindCoreError.operationFailed(
+        "The start date would be after the new due date; give an earlier --start, or --clear-start"
+      )
+    }
+    if let oldDueAt = timedInstant(reminder.dueDateComponents, calendar: calendar) {
+      ReminderAlarmMutation.moveDueAlarms(
+        on: reminder,
+        from: oldDueAt,
+        to: timedInstant(newDue, calendar: calendar)
+      )
+    }
+    reminder.dueDateComponents = nil
+    if let newDue {
+      reminder.dueDateComponents = newDue
+    } else {
+      try ReminderAlarmMutation.replaceRelativeAlarms(on: reminder, with: .remove)
+    }
+    // Changing the due date makes EventKit rewrite an existing start date, so write the wanted one back.
+    if let oldStart {
+      reminder.startDateComponents = nil
+      reminder.startDateComponents = startIsCopy ? newDue : oldStart
+    }
+  }
+
+  private static func timedInstant(_ components: DateComponents?, calendar: Calendar) -> Date? {
+    guard let components, !isAllDay(components) else { return nil }
+    return calendar.date(from: components)
+  }
+
+  private static func isCopy(_ start: DateComponents?, of due: DateComponents?) -> Bool {
+    guard let start, let due else { return false }
+    let day: [Calendar.Component] = [.year, .month, .day]
+    let time: [Calendar.Component] = [.hour, .minute, .second]
+    guard day.allSatisfy({ start.value(for: $0) == due.value(for: $0) }) else { return false }
+    if due.hour == nil {
+      return time.allSatisfy { (start.value(for: $0) ?? 0) == 0 }
+    }
+    return time.allSatisfy { start.value(for: $0) == due.value(for: $0) } && start.timeZone == due.timeZone
+  }
+
+  private static func isAfter(_ start: DateComponents, _ due: DateComponents, calendar: Calendar) -> Bool {
+    if start.hour == nil || due.hour == nil {
+      let day = { (date: DateComponents) in [date.year ?? 0, date.month ?? 0, date.day ?? 0] }
+      return day(due).lexicographicallyPrecedes(day(start))
+    }
+    guard let startDate = calendar.date(from: start), let dueDate = calendar.date(from: due) else { return false }
+    return startDate > dueDate
+  }
+
+  static func applyStartDate(_ update: ParsedUserDate??, to reminder: EKReminder, calendar: Calendar) {
+    guard let update else { return }
+    reminder.startDateComponents = nil
+    if let startDate = update {
+      reminder.startDateComponents = calendarComponents(from: startDate, calendar: calendar)
+    }
+  }
+
   private func calendarComponents(from parsed: ParsedUserDate) -> DateComponents {
+    Self.calendarComponents(from: parsed, calendar: calendar)
+  }
+
+  private static func calendarComponents(from parsed: ParsedUserDate, calendar: Calendar) -> DateComponents {
     let components: Set<Calendar.Component> =
       parsed.isDateOnly
       ? [.year, .month, .day]
@@ -298,15 +404,50 @@ extension RemindersStore {
     try Self.reminderItem(from: reminder, calendar: calendar)
   }
 
-  private func replaceRecurrence(on reminder: EKReminder, with rule: RecurrenceRule?) {
+  static func replaceRecurrence(on reminder: EKReminder, with rule: RecurrenceRule?) {
     for existing in reminder.recurrenceRules ?? [] {
       reminder.removeRecurrenceRule(existing)
     }
     guard let rule else { return }
-    reminder.addRecurrenceRule(
-      EKRecurrenceRule(recurrenceWith: rule.eventKitFrequency, interval: rule.interval, end: nil))
+    reminder.addRecurrenceRule(rule.eventKitRule)
   }
 
+  static func replaceRecurrenceEnd(on reminder: EKReminder, with end: RecurrenceEnd) throws {
+    let existingRules = reminder.recurrenceRules ?? []
+    guard !existingRules.isEmpty else {
+      throw RemindCoreError.operationFailed("Reminder has no repeat to end")
+    }
+    // EventKit ignores a changed end on a rule a saved reminder already holds, so build a new rule.
+    let rebuilt = try existingRules.map { existing in
+      let rule = EKRecurrenceRule(
+        recurrenceWith: existing.frequency,
+        interval: existing.interval,
+        daysOfTheWeek: existing.daysOfTheWeek,
+        daysOfTheMonth: existing.daysOfTheMonth,
+        monthsOfTheYear: existing.monthsOfTheYear,
+        weeksOfTheYear: existing.weeksOfTheYear,
+        daysOfTheYear: existing.daysOfTheYear,
+        setPositions: existing.setPositions,
+        end: end.eventKitEnd
+      )
+      if rule.firstDayOfTheWeek != existing.firstDayOfTheWeek {
+        guard rule.responds(to: NSSelectorFromString("setFirstDayOfTheWeek:")) else {
+          throw RemindCoreError.operationFailed(
+            "This repeat starts its weeks on another day, which can't be kept when only the end changes; "
+              + "give --repeat again with the end"
+          )
+        }
+        rule.setValue(existing.firstDayOfTheWeek, forKey: "firstDayOfTheWeek")
+      }
+      return rule
+    }
+    for existing in existingRules {
+      reminder.removeRecurrenceRule(existing)
+    }
+    for rule in rebuilt {
+      reminder.addRecurrenceRule(rule)
+    }
+  }
 }
 
 extension RecurrenceFrequency {
@@ -325,7 +466,7 @@ extension RecurrenceFrequency {
     }
   }
 
-  fileprivate var eventKitFrequency: EKRecurrenceFrequency {
+  var eventKitFrequency: EKRecurrenceFrequency {
     switch self {
     case .daily:
       return .daily
@@ -336,11 +477,5 @@ extension RecurrenceFrequency {
     case .yearly:
       return .yearly
     }
-  }
-}
-
-extension RecurrenceRule {
-  fileprivate var eventKitFrequency: EKRecurrenceFrequency {
-    frequency.eventKitFrequency
   }
 }

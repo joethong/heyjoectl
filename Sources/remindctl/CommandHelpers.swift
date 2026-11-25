@@ -1,3 +1,4 @@
+import Commander
 import Foundation
 import RemindCore
 
@@ -18,10 +19,60 @@ enum CommandHelpers {
   }
 
   static func parseDueDate(_ value: String) throws -> ParsedUserDate {
-    guard let parsed = DateParsing.parseUserDateWithMetadata(value) else {
-      throw RemindCoreError.invalidDate(value)
+    try parseDueDate(value, now: Date(), calendar: .current)
+  }
+
+  static func parseDueDate(_ value: String, now: Date, calendar: Calendar) throws -> ParsedUserDate {
+    try DateParsing.requireUserDate(value, now: now, calendar: calendar)
+  }
+
+  static func parseRecurrenceEnd(
+    until: String?,
+    count: String?,
+    calendar: Calendar = .current,
+    now: Date = Date()
+  ) throws -> RecurrenceEnd? {
+    if until != nil && count != nil {
+      throw RemindCoreError.operationFailed("Use either --repeat-until or --repeat-count, not both")
     }
-    return parsed
+    if let until {
+      let parsed = try DateParsing.requireUserDate(until, now: now, calendar: calendar)
+      return .through(parsed, calendar: calendar)
+    }
+    if let count {
+      guard let number = Int(count), number >= 1 else {
+        throw RemindCoreError.operationFailed(
+          "Invalid repeat count: \"\(count)\" (use a whole number of 1 or more)"
+        )
+      }
+      return .count(number)
+    }
+    return nil
+  }
+
+  static func parseAlarmBefore(_ value: String) throws -> RelativeAlarmChange {
+    let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if normalized == "none" {
+      return .remove
+    }
+    let secondsPerUnit = ["m": 60, "h": 3600, "d": 86_400, "w": 604_800]
+    let maxSeconds = 366 * 86_400
+    let amountText = normalized.dropLast()
+    guard
+      let unit = normalized.last,
+      let perUnit = secondsPerUnit[String(unit)],
+      amountText.allSatisfy({ $0.isASCII && $0.isNumber }),
+      let amount = Int(amountText), amount > 0,
+      case (let seconds, false) = amount.multipliedReportingOverflow(by: perUnit),
+      seconds <= maxSeconds
+    else {
+      throw RemindCoreError.operationFailed(
+        "Invalid --alarm-before: \"\(value)\" "
+          + "(use a whole number above 0 with m, h, d or w, up to 366 days, "
+          + "such as 15m, 1h, 1d or 1w, or none)"
+      )
+    }
+    return .set(beforeDueSeconds: seconds)
   }
 
   static func parseURL(_ value: String) throws -> URL {
@@ -37,27 +88,48 @@ enum CommandHelpers {
     return url
   }
 
-  static func parseRecurrence(_ value: String) throws -> RecurrenceRule {
-    let normalized = value.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-    switch normalized {
-    case "daily":
-      return RecurrenceRule(frequency: .daily)
-    case "weekly":
-      return RecurrenceRule(frequency: .weekly)
-    case "biweekly":
-      return RecurrenceRule(frequency: .weekly, interval: 2)
-    case "monthly":
-      return RecurrenceRule(frequency: .monthly)
-    case "yearly", "annually":
-      return RecurrenceRule(frequency: .yearly)
-    default:
-      return try parseCustomRecurrence(normalized, original: value)
-    }
+  static func resolveShowIdentifiers(
+    _ inputs: [String],
+    in store: any ReminderCommandStore
+  ) async throws -> [ReminderItem] {
+    try await resolveShowIdentifiers(
+      inputs,
+      lookUp: { await store.reminderItem(withID: $0) },
+      fetchAll: { try await store.reminders(in: nil) }
+    )
   }
 
-  static func resolveShowIdentifiers(_ inputs: [String], from reminders: [ReminderItem]) throws -> [ReminderItem] {
+  static func resolveShowIdentifiers(
+    _ inputs: [String],
+    lookUp: @Sendable (String) async throws -> ReminderItem?,
+    fetchAll: @Sendable () async throws -> [ReminderItem]
+  ) async throws -> [ReminderItem] {
+    if let direct = try await lookUpFullIDs(inputs, lookUp: lookUp) {
+      return direct
+    }
+    let reminders = try await fetchAll()
     let defaultShowReminders = ReminderFiltering.apply(reminders, filter: .today)
     return try IDResolver.resolve(inputs, from: reminders, numericFrom: defaultShowReminders)
+  }
+
+  private static func lookUpFullIDs(
+    _ inputs: [String],
+    lookUp: (String) async throws -> ReminderItem?
+  ) async throws -> [ReminderItem]? {
+    let ids = inputs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+    guard !ids.isEmpty, ids.allSatisfy({ UUID(uuidString: $0) != nil }) else {
+      return nil
+    }
+    var resolved: [ReminderItem] = []
+    for id in ids {
+      guard let item = try await lookUp(id), item.id.uppercased() == id else {
+        return nil
+      }
+      if !resolved.contains(where: { $0.id == item.id }) {
+        resolved.append(item)
+      }
+    }
+    return resolved
   }
 
   static func listTarget(name: String?, id: String?) throws -> ReminderListTarget? {
@@ -82,36 +154,5 @@ enum CommandHelpers {
       reminder.url?.absoluteString ?? "",
     ].joined(separator: "\n")
     return haystack.range(of: trimmed, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-  }
-
-  private static func parseCustomRecurrence(_ normalized: String, original: String) throws -> RecurrenceRule {
-    let parts = normalized.split(separator: " ")
-    guard parts.count == 3, parts[0] == "every", let interval = Int(parts[1]), interval > 0 else {
-      throw invalidRecurrence(original)
-    }
-
-    let frequency: RecurrenceFrequency
-    switch parts[2] {
-    case "day", "days":
-      frequency = .daily
-    case "week", "weeks":
-      frequency = .weekly
-    case "month", "months":
-      frequency = .monthly
-    case "year", "years":
-      frequency = .yearly
-    default:
-      throw invalidRecurrence(original)
-    }
-    return RecurrenceRule(frequency: frequency, interval: interval)
-  }
-
-  private static func invalidRecurrence(_ value: String) -> RemindCoreError {
-    RemindCoreError.operationFailed(
-      """
-      Invalid repeat value: "\(value)" \
-      (use daily|weekly|biweekly|monthly|yearly or "every N days/weeks/months/years")
-      """
-    )
   }
 }

@@ -16,4 +16,13 @@ struct ErrorsTests {
     #expect(RemindCoreError.unsupported("nope").localizedDescription.contains("nope"))
     #expect(RemindCoreError.operationFailed("fail").localizedDescription.contains("fail"))
   }
+
+  @Test("A clock-change refusal names the day; the plain invalid-date message stays word for word")
+  func clockChangeMessage() {
+    #expect(
+      RemindCoreError.invalidDateClockChange("saturday 23:30", day: "2026-03-28").localizedDescription
+        == "Invalid date: \"saturday 23:30\" (that time doesn't exist on 2026-03-28 "
+        + "because the clocks change; pick another time).")
+    #expect(RemindCoreError.invalidDate("saturday 23:30").localizedDescription == "Invalid date: \"saturday 23:30\".")
+  }
 }

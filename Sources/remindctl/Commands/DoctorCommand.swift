@@ -7,6 +7,7 @@ struct DoctorReport: Codable, Sendable, Equatable {
   let executable: String
   let shell: String?
   let richRead: RichReadDiagnostics
+  let privateFields: PrivateFieldsDiagnostics
   let agentNotes: [String]
 }
 
@@ -34,6 +35,7 @@ enum DoctorCommand {
         executable: CommandLine.arguments.first ?? "remindctl",
         shell: ProcessInfo.processInfo.environment["SHELL"],
         richRead: RichReadDiagnostics.collect(),
+        privateFields: PrivateFieldsDiagnostics.collect(runtime: runtime, authorized: status.isAuthorized),
         agentNotes: values.flag("forAgent") ? PermissionsHelp.guidanceLines(for: status) : []
       )
 
@@ -55,6 +57,8 @@ enum DoctorCommand {
         if let error = report.richRead.error {
           Swift.print("Rich read warning: \(error)")
         }
+        Swift.print(report.privateFields.summaryLine)
+        Swift.print(report.privateFields.writesSummaryLine)
         for line in report.agentNotes {
           Swift.print(line)
         }

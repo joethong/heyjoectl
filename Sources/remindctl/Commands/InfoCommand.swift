@@ -21,19 +21,28 @@ enum InfoCommand {
         "remindctl info 4A83 --json",
       ]
     ) { values, runtime in
-      guard let input = values.argument(0) else {
-        throw ParsedValuesError.missingArgument("id")
-      }
-
-      let store = RemindersStore()
-      try await store.requestAccess()
-      let reminders = try await store.reminders(in: nil)
-      let resolved = try CommandHelpers.resolveShowIdentifiers([input], from: reminders)
-      guard let reminder = resolved.first else {
-        throw RemindCoreError.reminderNotFound(input)
-      }
-
+      let reminder = try await run(values, runtime: runtime)
       OutputRenderer.printReminderDetail(reminder, format: runtime.outputFormat)
     }
+  }
+
+  static func run(
+    _ values: ParsedValues,
+    runtime: RuntimeOptions,
+    makeStore: () -> any ReminderCommandStore = { RemindersStore() },
+    reader: any PrivateFieldsReader = ReminderKitFieldsReader()
+  ) async throws -> ReminderItem {
+    guard let input = values.argument(0) else {
+      throw ParsedValuesError.missingArgument("id")
+    }
+
+    let store = makeStore()
+    try await store.requestAccess()
+    let resolved = try await CommandHelpers.resolveShowIdentifiers([input], in: store)
+    guard let reminder = resolved.first else {
+      throw RemindCoreError.reminderNotFound(input)
+    }
+
+    return PrivateFieldsSupport.attach(to: [reminder], scope: .everything, runtime: runtime, reader: reader)[0]
   }
 }

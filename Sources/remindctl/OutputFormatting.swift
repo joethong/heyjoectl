@@ -48,12 +48,7 @@ enum OutputRenderer {
   static func printReminder(_ reminder: ReminderItem, format: OutputFormat) {
     switch format {
     case .standard:
-      let due =
-        reminder.dueDate.map {
-          DateParsing.formatDisplay($0, isDateOnly: reminder.dueDateIsAllDay)
-        } ?? "no due date"
-      let recurrence = recurrenceSuffix(for: reminder)
-      Swift.print("✓ \(reminder.title) [\(reminder.listName)] — \(due)\(recurrence)")
+      Swift.print(confirmationLine(for: reminder))
     case .table:
       printRemindersTable([reminder])
     case .plain:
@@ -85,8 +80,7 @@ enum OutputRenderer {
     case .plain:
       Swift.print("\(count)")
     case .json:
-      let payload = ["deleted": count]
-      printJSON(payload)
+      printJSON(deletePayload(count))
     case .quiet:
       break
     }
@@ -99,10 +93,18 @@ enum OutputRenderer {
     case .plain:
       Swift.print(status.rawValue)
     case .json:
-      printJSON(AuthorizationSummary(status: status.rawValue, authorized: status.isAuthorized))
+      printJSON(authorizationPayload(status))
     case .quiet:
       Swift.print(status.isAuthorized ? "1" : "0")
     }
+  }
+
+  static func deletePayload(_ count: Int) -> [String: Int] {
+    ["deleted": count]
+  }
+
+  static func authorizationPayload(_ status: RemindersAuthorizationStatus) -> AuthorizationSummary {
+    AuthorizationSummary(status: status.rawValue, authorized: status.isAuthorized)
   }
 
   private static func printRemindersStandard(_ reminders: [ReminderItem]) {
@@ -143,7 +145,8 @@ enum OutputRenderer {
           reminder.priority == .none ? "" : reminder.priority.rawValue,
           reminder.listName,
           reminder.title,
-        ].joined(separator: "\t"))
+        ].joined(separator: "\t")
+      )
     }
   }
 
@@ -158,7 +161,16 @@ enum OutputRenderer {
     }
   }
 
-  private static func standardLine(for reminder: ReminderItem) -> String {
+  static func confirmationLine(for reminder: ReminderItem) -> String {
+    let due =
+      reminder.dueDate.map {
+        DateParsing.formatDisplay($0, isDateOnly: reminder.dueDateIsAllDay)
+      } ?? "no due date"
+    let recurrence = recurrenceSuffix(for: reminder)
+    return "✓ \(reminder.title) [\(reminder.listName)] — \(due)\(recurrence)\(privateMarks(for: reminder))"
+  }
+
+  static func standardLine(for reminder: ReminderItem) -> String {
     let status = reminder.isCompleted ? "x" : " "
     let due =
       reminder.dueDate.map {
@@ -166,48 +178,11 @@ enum OutputRenderer {
       } ?? "no due date"
     let priority = reminder.priority == .none ? "" : " priority=\(reminder.priority.rawValue)"
     let recurrence = recurrenceSuffix(for: reminder)
-    return "[\(status)] \(reminder.title) [\(reminder.listName)] — \(due)\(priority)\(recurrence)"
+    let marks = privateMarks(for: reminder)
+    return "[\(status)] \(reminder.title) [\(reminder.listName)] — \(due)\(priority)\(recurrence)\(marks)"
   }
 
-  private static func printReminderDetailStandard(_ reminder: ReminderItem) {
-    Swift.print("ID: \(reminder.id)")
-    Swift.print("Title: \(reminder.title)")
-    Swift.print("List: \(reminder.listName)")
-    Swift.print("Status: \(reminder.isCompleted ? "completed" : "open")")
-    Swift.print("Priority: \(reminder.priority.rawValue)")
-
-    if let dueDate = reminder.dueDate {
-      Swift.print("Due: \(DateParsing.formatDisplay(dueDate, isDateOnly: reminder.dueDateIsAllDay))")
-    }
-    if let alarmDate = reminder.alarmDate {
-      Swift.print("Alarm: \(DateParsing.formatDisplay(alarmDate))")
-    }
-    if let recurrenceRule = reminder.recurrenceRule {
-      Swift.print("Repeat: \(recurrenceRule.displayString)")
-    }
-    if let locationTrigger = reminder.locationTrigger {
-      Swift.print(
-        "Location: \(locationTrigger.address) (\(locationTrigger.proximity.rawValue), \(locationTrigger.radius)m)")
-    }
-    if let url = reminder.url {
-      Swift.print("URL: \(url.absoluteString)")
-    }
-    if let creationDate = reminder.creationDate {
-      Swift.print("Created: \(DateParsing.formatDisplay(creationDate))")
-    }
-    if let lastModifiedDate = reminder.lastModifiedDate {
-      Swift.print("Modified: \(DateParsing.formatDisplay(lastModifiedDate))")
-    }
-    if let completionDate = reminder.completionDate {
-      Swift.print("Completed: \(DateParsing.formatDisplay(completionDate))")
-    }
-    if let notes = reminder.notes, !notes.isEmpty {
-      Swift.print("Notes:")
-      Swift.print(notes)
-    }
-  }
-
-  private static func plainLine(for reminder: ReminderItem) -> String {
+  static func plainLine(for reminder: ReminderItem) -> String {
     let due: String
     if let dueDate = reminder.dueDate {
       due =
@@ -227,15 +202,16 @@ enum OutputRenderer {
     ].joined(separator: "\t")
   }
 
-  static func printJSON<T: Encodable>(_ payload: T) {
+  static func renderJSON<T: Encodable>(_ payload: T) throws -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
     encoder.dateEncodingStrategy = .iso8601
+    return String(bytes: try encoder.encode(payload), encoding: .utf8) ?? ""
+  }
+
+  static func printJSON<T: Encodable>(_ payload: T) {
     do {
-      let data = try encoder.encode(payload)
-      if let json = String(data: data, encoding: .utf8) {
-        Swift.print(json)
-      }
+      Swift.print(try renderJSON(payload))
     } catch {
       Swift.print("Failed to encode JSON: \(error)")
     }
@@ -255,11 +231,20 @@ enum OutputRenderer {
     return formatter
   }
 
+  private static func privateMarks(for reminder: ReminderItem) -> String {
+    (reminder.flagged == true ? " [flagged]" : "") + (reminder.urgent == true ? " [urgent]" : "")
+      + (reminder.earlyReminder.map { " [early: \($0.displayString)]" } ?? "")
+      + (reminder.parentID.map { " [sub-task of \(shortID($0))]" } ?? "")
+      + (reminder.assignee.map { " [assigned to \($0.name ?? shortID($0.id))]" } ?? "")
+      + (reminder.tags ?? []).map { " #\($0)" }.joined()
+      + (reminder.links == nil ? "" : " [link]")
+  }
+
   private static func recurrenceSuffix(for reminder: ReminderItem) -> String {
     reminder.recurrenceRule.map { " repeat=\($0.displayString)" } ?? ""
   }
 
-  private static func shortID(_ id: String) -> String {
+  static func shortID(_ id: String) -> String {
     String(id.prefix(8))
   }
 }

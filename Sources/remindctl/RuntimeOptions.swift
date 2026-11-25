@@ -7,6 +7,7 @@ struct RuntimeOptions: Sendable {
   let quiet: Bool
   let noColor: Bool
   let noInput: Bool
+  let noPrivate: Bool
   let format: String?
 
   init(parsedValues: ParsedValues) {
@@ -15,6 +16,7 @@ struct RuntimeOptions: Sendable {
     self.quiet = parsedValues.flags.contains("quiet")
     self.noColor = parsedValues.flags.contains("noColor")
     self.noInput = parsedValues.flags.contains("noInput")
+    self.noPrivate = parsedValues.flags.contains("noPrivate")
     self.format = parsedValues.options["format"]?.last?.lowercased()
   }
 

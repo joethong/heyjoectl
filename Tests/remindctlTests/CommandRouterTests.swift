@@ -12,7 +12,7 @@ struct CommandRouterTests {
   @Test("Bulk commands preserve all positional values", arguments: ["list", "complete", "delete"])
   func bulkArguments(_ command: String) throws {
     let invocation = try CommandRouter().program.resolve(arguments: [
-      "remindctl", command, "First", "Second", "--plain",
+      "remindjoectl", command, "First", "Second", "--plain",
     ])
     #expect(invocation.parsedValues.positional == ["First", "Second"])
     #expect(invocation.parsedValues.flags.contains("plainOutput"))
@@ -22,7 +22,7 @@ struct CommandRouterTests {
     "Single-target commands reject extra positionals", arguments: ["add", "edit", "search", "info", "link", "open"])
   func singleTargetArguments(_ command: String) {
     #expect(throws: (any Error).self) {
-      try CommandRouter().program.resolve(arguments: ["remindctl", command, "First", "Second"])
+      try CommandRouter().program.resolve(arguments: ["remindjoectl", command, "First", "Second"])
     }
   }
 

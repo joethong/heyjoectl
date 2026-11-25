@@ -38,8 +38,11 @@ enum LinkCommand {
     }
   }
 
-  static func resolve(values: ParsedValues) async throws -> LinkResult {
-    let store = RemindersStore()
+  static func resolve(
+    values: ParsedValues,
+    makeStore: () -> any ReminderCommandStore = { RemindersStore() }
+  ) async throws -> LinkResult {
+    let store = makeStore()
     try await store.requestAccess()
 
     if let target = try CommandHelpers.listTarget(name: values.option("list"), id: values.option("listID")) {
@@ -54,8 +57,7 @@ enum LinkCommand {
     guard let input = values.argument(0) else {
       throw ParsedValuesError.missingArgument("id")
     }
-    let reminders = try await store.reminders(in: nil)
-    guard let reminder = try CommandHelpers.resolveShowIdentifiers([input], from: reminders).first else {
+    guard let reminder = try await CommandHelpers.resolveShowIdentifiers([input], in: store).first else {
       throw RemindCoreError.reminderNotFound(input)
     }
     return LinkResult(

@@ -10,7 +10,12 @@ enum EditCommand {
       discussion: """
         Use an index or ID prefix from the show output.
         --alarm schedules a notification; it does not enable the native Urgent toggle in Reminders.app.
-        EventKit does not expose Urgent. To enable it, use Reminders.app.
+        --alarm-before sets a notification a set time before the due date (5m, 15m, 1h, 1d, 1w). It replaces only
+        the before-due alarms, and needs a due date (the reminder's or a new --due). --alarm-before none removes them.
+        --urgent and --not-urgent set that toggle through ReminderKit, as --flag and --unflag set the flag.
+        --early sets the Early Reminder (15m, 1h, 2d, 1w, 1mo) through ReminderKit; --early none removes it.
+        --tag and --untag add and remove tags through ReminderKit; repeat them for more than one.
+        --link and --unlink add and remove links Reminders.app shows, through ReminderKit; --url stays EventKit's URL.
         """,
       signature: CommandSignatures.withRuntimeFlags(
         CommandSignature(
@@ -21,11 +26,58 @@ enum EditCommand {
             .make(label: "title", names: [.short("t"), .long("title")], help: "New title", parsing: .singleValue),
             .make(label: "list", names: [.short("l"), .long("list")], help: "Move to list", parsing: .singleValue),
             .make(
-              label: "listID", names: [.long("list-id")], help: "Move to list by ID or ID prefix", parsing: .singleValue
+              label: "listID",
+              names: [.long("list-id")],
+              help: "Move to list by ID or ID prefix",
+              parsing: .singleValue
             ),
             .make(label: "due", names: [.short("d"), .long("due")], help: "Set due date", parsing: .singleValue),
+            .make(label: "start", names: [.long("start")], help: "Set start date", parsing: .singleValue),
             .make(
-              label: "alarm", names: [.short("a"), .long("alarm")], help: "Set notification date", parsing: .singleValue
+              label: "alarm",
+              names: [.short("a"), .long("alarm")],
+              help: "Set notification date",
+              parsing: .singleValue
+            ),
+            .make(
+              label: "alarmBefore",
+              names: [.long("alarm-before")],
+              help:
+                "Notify this long before the due date: a whole number with m, h, d or w (15m, 1h, 1d, 1w), "
+                + "or none to remove",
+              parsing: .singleValue
+            ),
+            .make(
+              label: "early",
+              names: [.long("early")],
+              help: "Early Reminder before the due date: a whole number with m, h, d, w or mo (15m, 1h, 2d, 1w, 1mo), "
+                + "up to a year: \(EarlyReminderUnit.yearLimits), or none (written through ReminderKit)",
+              parsing: .singleValue
+            ),
+            .make(
+              label: "tag",
+              names: [.long("tag")],
+              help: "Add a tag, named without # (repeat for more; written through ReminderKit)",
+              parsing: .singleValue
+            ),
+            .make(
+              label: "untag",
+              names: [.long("untag")],
+              help: "Remove a tag, named without # (repeat for more; written through ReminderKit)",
+              parsing: .singleValue
+            ),
+            .make(
+              label: "link",
+              names: [.long("link")],
+              help: "Add a link Reminders.app shows: an http, https or mailto URL (repeat for more; written through "
+                + "ReminderKit)",
+              parsing: .singleValue
+            ),
+            .make(
+              label: "unlink",
+              names: [.long("unlink")],
+              help: "Remove a link Reminders.app shows, by its URL (repeat for more; written through ReminderKit)",
+              parsing: .singleValue
             ),
             .make(label: "notes", names: [.short("n"), .long("notes")], help: "Set notes", parsing: .singleValue),
             .make(
@@ -37,7 +89,26 @@ enum EditCommand {
             .make(
               label: "repeat",
               names: [.short("r"), .long("repeat")],
-              help: "daily|weekly|biweekly|monthly|yearly|every N days/weeks/months/years",
+              help:
+                "daily|weekly|biweekly|monthly|yearly|every N days/weeks/months/years, "
+                + "optionally with on <days>: weekly on mon,fri | monthly on 1,15 | monthly on last fri "
+                + "(on a yearly rule, last fri is the last Friday of the year)",
+              parsing: .singleValue
+            ),
+            .make(
+              label: "repeatUntil",
+              names: [.long("repeat-until")],
+              help:
+                "Last day of the repeat (a date-only value includes that whole day); "
+                + "alone it changes only the end of the current repeat",
+              parsing: .singleValue
+            ),
+            .make(
+              label: "repeatCount",
+              names: [.long("repeat-count")],
+              help:
+                "Number of times the repeat happens (a whole number of 1 or more); "
+                + "alone it changes only the end of the current repeat",
               parsing: .singleValue
             ),
             .make(
@@ -49,146 +120,100 @@ enum EditCommand {
           ],
           flags: [
             .make(label: "clearDue", names: [.long("clear-due")], help: "Clear due date"),
+            .make(label: "clearStart", names: [.long("clear-start")], help: "Clear start date"),
             .make(label: "clearAlarm", names: [.long("clear-alarm")], help: "Clear alarm"),
             .make(label: "clearUrl", names: [.long("clear-url")], help: "Clear URL"),
             .make(label: "noRepeat", names: [.long("no-repeat")], help: "Remove recurrence"),
             .make(label: "complete", names: [.long("complete")], help: "Mark completed"),
             .make(label: "incomplete", names: [.long("incomplete")], help: "Mark incomplete"),
+            .make(label: "flag", names: [.long("flag")], help: "Flag the reminder (written through ReminderKit)"),
+            .make(label: "unflag", names: [.long("unflag")], help: "Remove the flag (written through ReminderKit)"),
+            .make(label: "urgent", names: [.long("urgent")], help: "Mark Urgent (written through ReminderKit)"),
+            .make(
+              label: "notUrgent",
+              names: [.long("not-urgent")],
+              help: "Remove Urgent (written through ReminderKit)"
+            ),
           ]
         )
       ),
       usageExamples: [
         "remindctl edit 1 --title \"New title\"",
         "remindctl edit 4A83 --due tomorrow",
+        "remindctl edit 4A83 --start 2026-01-01",
+        "remindctl edit 4A83 --clear-start",
         "remindctl edit 4A83 --alarm \"2026-01-03 08:55\"",
+        "remindctl edit 4A83 --alarm-before 15m",
         "remindctl edit 4A83 --repeat weekly",
+        "remindctl edit 4A83 --repeat \"weekly on mon,fri\"",
+        "remindctl edit 4A83 --repeat \"monthly on last fri\"",
+        "remindctl edit 4A83 --repeat-until 2026-12-31",
+        "remindctl edit 4A83 --repeat weekly --repeat-count 8",
         "remindctl edit 2 --priority high --notes \"Call before noon\"",
         "remindctl edit 3 --clear-due --clear-alarm --no-repeat",
         "remindctl edit 4A83 --url \"https://example.com/product\"",
         "remindctl edit 4A83 --clear-url",
+        "remindctl edit 4A83 --flag",
+        "remindctl edit 4A83 --unflag",
+        "remindctl edit 4A83 --urgent",
+        "remindctl edit 4A83 --not-urgent",
+        "remindctl edit 4A83 --early 1d",
+        "remindctl edit 4A83 --early none",
+        "remindctl edit 4A83 --tag errand --untag home",
+        "remindctl edit 4A83 --link https://example.com --unlink https://example.com/old",
       ]
     ) { values, runtime in
-      guard let input = values.argument(0) else {
-        throw ParsedValuesError.missingArgument("id")
-      }
+      let result = try await run(values, runtime: runtime)
+      OutputRenderer.printReminder(result.reminder, format: runtime.outputFormat)
+      result.note.map(Console.printError)
+    }
+  }
 
-      let store = RemindersStore()
-      try await store.requestAccess()
-      let reminders = try await store.reminders(in: nil)
-      let resolved = try CommandHelpers.resolveShowIdentifiers([input], from: reminders)
-      guard let reminder = resolved.first else {
-        throw RemindCoreError.reminderNotFound(input)
-      }
+  static func run(
+    _ values: ParsedValues,
+    runtime: RuntimeOptions,
+    makeStore: () -> any ReminderCommandStore = { RemindersStore() },
+    writer: any PrivateFieldsWriter = ReminderKitFieldsWriter(),
+    reader: any PrivateFieldsReader = ReminderKitFieldsReader()
+  ) async throws -> (reminder: ReminderItem, note: String?) {
+    guard let input = values.argument(0) else {
+      throw ParsedValuesError.missingArgument("id")
+    }
+    let privateChange = try CommandHelpers.privateChange(values, runtime: runtime)
 
-      let title = values.option("title")
-      let listName = values.option("list")
-      let listID = values.option("listID")
-      let notes = values.option("notes")
-      let alarmValue = values.option("alarm")
-      let repeatValue = values.option("repeat")
+    let store = makeStore()
+    try await store.requestAccess()
+    let resolved = try await CommandHelpers.resolveShowIdentifiers([input], in: store)
+    guard let reminder = resolved.first else {
+      throw RemindCoreError.reminderNotFound(input)
+    }
 
-      let urlUpdate = try parsedURLUpdate(urlValue: values.option("url"), clearURL: values.flag("clearUrl"))
+    let edit = try ParsedEdit(values)
+    let outcome = try saveOutcome(hasPublicChanges: edit.hasPublicChanges, privateChange: privateChange)
+    let update = edit.update
 
-      let dateUpdates = try parsedDateUpdates(
-        dueValue: values.option("due"),
-        clearDue: values.flag("clearDue"),
-        alarmValue: alarmValue,
-        clearAlarm: values.flag("clearAlarm")
+    let updated = try await PrivateFieldsSupport.save(
+      privateChange,
+      outcome: outcome,
+      writer: writer,
+      reader: reader
+    ) {
+      edit.hasPublicChanges ? try await store.updateReminder(id: reminder.id, update: update) : reminder
+    }
+    if removesImpliedEarlyReminder(clearDue: values.flag("clearDue"), privateChange: privateChange) {
+      return PrivateFieldsSupport.removeEarlyReminder(
+        from: updated,
+        runtime: runtime,
+        writer: writer,
+        reader: reader
       )
-
-      var recurrenceUpdate: RecurrenceRule??
-      if let repeatValue {
-        recurrenceUpdate = try CommandHelpers.parseRecurrence(repeatValue)
-      }
-      if values.flag("noRepeat") {
-        if recurrenceUpdate != nil {
-          throw RemindCoreError.operationFailed("Use either --repeat or --no-repeat, not both")
-        }
-        recurrenceUpdate = .some(nil)
-      }
-
-      var priority: ReminderPriority?
-      if let priorityValue = values.option("priority") {
-        priority = try CommandHelpers.parsePriority(priorityValue)
-      }
-
-      let completeFlag = values.flag("complete")
-      let incompleteFlag = values.flag("incomplete")
-      if completeFlag && incompleteFlag {
-        throw RemindCoreError.operationFailed("Use either --complete or --incomplete, not both")
-      }
-      let isCompleted: Bool? = completeFlag ? true : (incompleteFlag ? false : nil)
-
-      let targetList = try CommandHelpers.listTarget(name: listName, id: listID)
-
-      let hasChanges =
-        title != nil || targetList != nil || notes != nil || urlUpdate != nil || dateUpdates.dueDate != nil
-        || dateUpdates.alarmDate != nil || priority != nil || recurrenceUpdate != nil || isCompleted != nil
-      if !hasChanges {
-        throw RemindCoreError.operationFailed("No changes specified")
-      }
-
-      let update = ReminderUpdate(
-        title: title,
-        notes: notes,
-        url: urlUpdate,
-        dueDate: dateUpdates.dueDate,
-        alarmDate: dateUpdates.alarmDate,
-        recurrenceRule: recurrenceUpdate,
-        priority: priority,
-        listTarget: targetList,
-        isCompleted: isCompleted
-      )
-
-      let updated = try await store.updateReminder(id: reminder.id, update: update)
-      OutputRenderer.printReminder(updated, format: runtime.outputFormat)
     }
-  }
-
-  static func parsedURLUpdate(urlValue: String?, clearURL: Bool) throws -> URL?? {
-    if let urlValue {
-      if clearURL {
-        throw RemindCoreError.operationFailed("Use either --url or --clear-url, not both")
-      }
-      return try CommandHelpers.parseURL(urlValue)
-    }
-    return clearURL ? .some(nil) : nil
-  }
-
-  struct DateUpdates {
-    let dueDate: ParsedUserDate??
-    let alarmDate: ParsedUserDate??
-  }
-
-  static func parsedDateUpdates(
-    dueValue: String?,
-    clearDue: Bool,
-    alarmValue: String?,
-    clearAlarm: Bool
-  ) throws -> DateUpdates {
-    if dueValue != nil && clearDue {
-      throw RemindCoreError.operationFailed("Use either --due or --clear-due, not both")
-    }
-    if alarmValue != nil && clearAlarm {
-      throw RemindCoreError.operationFailed("Use either --alarm or --clear-alarm, not both")
-    }
-
-    let dueDate: ParsedUserDate?? =
-      if let dueValue {
-        try CommandHelpers.parseDueDate(dueValue)
-      } else if clearDue {
-        .some(nil)
-      } else {
-        nil
-      }
-    let alarmDate: ParsedUserDate?? =
-      if let alarmValue {
-        try CommandHelpers.parseDueDate(alarmValue)
-      } else if clearAlarm {
-        .some(nil)
-      } else {
-        nil
-      }
-    return DateUpdates(dueDate: dueDate, alarmDate: alarmDate)
+    let shown = PrivateFieldsSupport.attachWritten(
+      [updated],
+      privateChange: privateChange,
+      runtime: runtime,
+      reader: reader
+    )[0]
+    return (shown, nil)
   }
 }

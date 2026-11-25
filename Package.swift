@@ -20,10 +20,12 @@ let package = Package(
         .linkedFramework("EventKit"),
       ]
     ),
+    .target(name: "RemindPrivate"),
     .executableTarget(
       name: "remindctl",
       dependencies: [
         "RemindCore",
+        "RemindPrivate",
         .product(name: "Commander", package: "Commander"),
       ],
       exclude: [
@@ -49,6 +51,7 @@ let package = Package(
       dependencies: [
         "remindctl",
         "RemindCore",
+        "RemindPrivate",
       ]
     ),
   ],

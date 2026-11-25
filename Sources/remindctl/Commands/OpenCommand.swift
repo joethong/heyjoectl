@@ -50,8 +50,13 @@ enum OpenCommand {
       ) {
         let store = RemindersStore()
         try await store.requestAccess()
-        let reminders = try await store.reminders(matching: listTarget)
-        OutputRenderer.printReminders(ReminderFiltering.apply(reminders, filter: .open), format: runtime.outputFormat)
+        let scope = ReminderFetchScope(filter: .open)
+        let reminders = try await store.reminders(matching: listTarget, scope: scope)
+        let open = ReminderFiltering.apply(reminders, filter: .open)
+        OutputRenderer.printReminders(
+          PrivateFieldsSupport.attach(to: open, scope: scope, runtime: runtime),
+          format: runtime.outputFormat
+        )
         return
       }
 

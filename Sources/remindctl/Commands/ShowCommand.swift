@@ -30,6 +30,12 @@ enum ShowCommand {
               help: "Limit to a list by ID or ID prefix",
               parsing: .singleValue
             ),
+            .make(
+              label: "tag",
+              names: [.long("tag")],
+              help: "Show only reminders with this tag, named without # (repeat to need every tag)",
+              parsing: .singleValue
+            ),
           ]
         )
       ),
@@ -39,9 +45,11 @@ enum ShowCommand {
         "remindctl show overdue",
         "remindctl show 2026-01-04",
         "remindctl show --list Work",
+        "remindctl show all --tag errand --tag home",
       ]
     ) { values, runtime in
       let listTarget = try CommandHelpers.listTarget(name: values.option("list"), id: values.option("listID"))
+      let tagFilter = try TagFilter.parse(values.options["tag"] ?? [], runtime: runtime)
       let filterToken = values.argument(0)
 
       let filter: ReminderFilter
@@ -56,9 +64,30 @@ enum ShowCommand {
 
       let store = RemindersStore()
       try await store.requestAccess()
-      let reminders = try await store.reminders(matching: listTarget)
-      let filtered = ReminderFiltering.apply(reminders, filter: filter)
-      OutputRenderer.printReminders(filtered, format: runtime.outputFormat)
+      let scope = ReminderFetchScope(filter: filter)
+      let reminders = try await store.reminders(matching: listTarget, scope: scope)
+      OutputRenderer.printReminders(
+        try shown(reminders, filter: filter, runtime: runtime, tagFilter: tagFilter),
+        format: runtime.outputFormat
+      )
     }
+  }
+
+  static func shown(
+    _ reminders: [ReminderItem],
+    filter: ReminderFilter,
+    runtime: RuntimeOptions,
+    tagFilter: TagFilter?,
+    reader: any PrivateFieldsReader = ReminderKitFieldsReader(),
+    warn: (String) -> Void = Console.printError
+  ) throws -> [ReminderItem] {
+    try PrivateFieldsSupport.attach(
+      to: ReminderFiltering.apply(reminders, filter: filter),
+      scope: ReminderFetchScope(filter: filter),
+      runtime: runtime,
+      tagFilter: tagFilter,
+      reader: reader,
+      warn: warn
+    )
   }
 }

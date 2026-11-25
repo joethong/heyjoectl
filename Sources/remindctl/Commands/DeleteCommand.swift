@@ -25,30 +25,37 @@ enum DeleteCommand {
         "remindctl delete 1 2 3 --force",
       ]
     ) { values, runtime in
-      let inputs = values.positional
-      guard !inputs.isEmpty else {
-        throw ParsedValuesError.missingArgument("ids")
-      }
+      try await run(values, runtime: runtime)
+    }
+  }
 
-      let store = RemindersStore()
-      try await store.requestAccess()
-      let reminders = try await store.reminders(in: nil)
-      let resolved = try CommandHelpers.resolveShowIdentifiers(inputs, from: reminders)
+  static func run(
+    _ values: ParsedValues,
+    runtime: RuntimeOptions,
+    makeStore: () -> any ReminderCommandStore = { RemindersStore() }
+  ) async throws {
+    let inputs = values.positional
+    guard !inputs.isEmpty else {
+      throw ParsedValuesError.missingArgument("ids")
+    }
 
-      if values.flag("dryRun") {
-        OutputRenderer.printReminders(resolved, format: runtime.outputFormat)
+    let store = makeStore()
+    try await store.requestAccess()
+    let resolved = try await CommandHelpers.resolveShowIdentifiers(inputs, in: store)
+
+    if values.flag("dryRun") {
+      OutputRenderer.printReminders(resolved, format: runtime.outputFormat)
+      return
+    }
+
+    if !values.flag("force") && !runtime.noInput && Console.isTTY {
+      let prompt = "Delete \(resolved.count) reminder(s)?"
+      if !Console.confirm(prompt, defaultValue: false) {
         return
       }
-
-      if !values.flag("force") && !runtime.noInput && Console.isTTY {
-        let prompt = "Delete \(resolved.count) reminder(s)?"
-        if !Console.confirm(prompt, defaultValue: false) {
-          return
-        }
-      }
-
-      let count = try await store.deleteReminders(ids: resolved.map { $0.id })
-      OutputRenderer.printDeleteResult(count, format: runtime.outputFormat)
     }
+
+    let count = try await store.deleteReminders(ids: resolved.map { $0.id })
+    OutputRenderer.printDeleteResult(count, format: runtime.outputFormat)
   }
 }
